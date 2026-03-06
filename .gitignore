@@ -1,0 +1,10 @@
+build/
+*.o
+*.a
+*.so
+*.exe
+.DS_Store
+CMakeFiles/
+cmake_install.cmake
+CMakeCache.txt
+Makefile
