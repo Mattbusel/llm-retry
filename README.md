@@ -106,15 +106,20 @@ C++17. No external dependencies.
 
 ## See Also
 
-The C++ LLM header suite — each is a single `.hpp`, no extra deps:
-
 | Repo | What it does |
 |------|-------------|
-| [llm-stream](https://github.com/Mattbusel/llm-stream) | Streaming responses from OpenAI & Anthropic |
-| [llm-cache](https://github.com/Mattbusel/llm-cache) | Response caching — skip redundant API calls |
-| [llm-cost](https://github.com/Mattbusel/llm-cost) | Token counting + per-model cost estimation |
-| **llm-retry** *(this repo)* | Retry logic + circuit breaker |
-| [llm-format](https://github.com/Mattbusel/llm-format) | Structured output / schema enforcement |
+| [llm-stream](https://github.com/Mattbusel/llm-stream) | Stream OpenAI & Anthropic responses via SSE |
+| [llm-cache](https://github.com/Mattbusel/llm-cache) | LRU response cache |
+| [llm-cost](https://github.com/Mattbusel/llm-cost) | Token counting + cost estimation |
+| **llm-retry** *(this repo)* | Retry + circuit breaker |
+| [llm-format](https://github.com/Mattbusel/llm-format) | Structured output / JSON schema |
+| [llm-embed](https://github.com/Mattbusel/llm-embed) | Embeddings + vector search |
+| [llm-pool](https://github.com/Mattbusel/llm-pool) | Concurrent request pool |
+| [llm-log](https://github.com/Mattbusel/llm-log) | Structured JSONL logging |
+| [llm-template](https://github.com/Mattbusel/llm-template) | Prompt templating |
+| [llm-agent](https://github.com/Mattbusel/llm-agent) | Tool-calling agent loop |
+| [llm-rag](https://github.com/Mattbusel/llm-rag) | RAG pipeline |
+| [llm-eval](https://github.com/Mattbusel/llm-eval) | Evaluation + consistency scoring |
 
 ## License
 
