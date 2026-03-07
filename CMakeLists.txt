@@ -3,18 +3,11 @@ project(llm_retry_examples CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-add_executable(basic_retry examples/basic_retry.cpp)
-target_include_directories(basic_retry PRIVATE include)
-if(MSVC)
-    target_compile_options(basic_retry PRIVATE /W4 /WX)
-else()
-    target_compile_options(basic_retry PRIVATE -Wall -Wextra)
-endif()
-
-add_executable(circuit_breaker examples/circuit_breaker.cpp)
-target_include_directories(circuit_breaker PRIVATE include)
-if(MSVC)
-    target_compile_options(circuit_breaker PRIVATE /W4 /WX)
-else()
-    target_compile_options(circuit_breaker PRIVATE -Wall -Wextra)
-endif()
+foreach(EXAMPLE basic_retry circuit_breaker)
+    add_executable(${EXAMPLE} examples/${EXAMPLE}.cpp)
+    target_include_directories(${EXAMPLE} PRIVATE include)
+    target_compile_options(${EXAMPLE} PRIVATE
+        $<$<CXX_COMPILER_ID:MSVC>:/W4>
+        $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra>
+    )
+endforeach()
