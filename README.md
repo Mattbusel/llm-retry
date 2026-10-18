@@ -11,9 +11,10 @@ LLM APIs fail in ordinary ways: 429 rate limits, 5xx overloads, dropped connecti
 ## Features
 
 - `with_retry<T>(fn, cfg)`: exponential backoff with jitter, max attempts and max delay
-- Retries `LLMError`s whose HTTP code is in `retry_on_http_codes` (default 429, 500, 502, 503, 504) or is 0 (network error); other exceptions are retried until the last attempt
-- `with_failover<T>(primary, fallback, cfg)`: retry the primary, then call the fallback once
-- `CircuitBreaker`: opens after N consecutive failures, rejects calls while open, half-opens after a timeout; thread safe
+- Retries `LLMError`s whose HTTP code is in `retry_on_http_codes` (default 408, 429, 500, 502, 503, 504, 529) or is 0 (network error); any other exception is your own code failing and propagates at once
+- Honors the server's Retry-After: set `LLMError::retry_after_seconds` and `with_retry` waits that long plus a random spread
+- `with_failover<T>(primary, fallback, cfg)`: retry the primary, then call the fallback once; a 4xx you caused (anything but 408/429) is rethrown instead of hidden behind the fallback
+- `CircuitBreaker`: opens after N consecutive failures, rejects calls while open, after a timeout lets exactly one trial call through (success closes, failure reopens); thread safe
 - `RetryResult<T>` reports attempts used, elapsed time and whether the fallback answered
 - Standard library only
 
@@ -71,7 +72,7 @@ g++ -std=c++17 -O2 main.cpp -o demo
 | `with_retry<T>(fn, RetryConfig)` | Retry a callable returning `T` |
 | `with_failover<T>(primary, fallback, RetryConfig)` | Retry, then fall back |
 | `CircuitBreaker(name, CircuitBreakerConfig)` | `call<T>(fn)`, `state()`, `stats()`, `reset()` |
-| `LLMError{http_code, message, is_retryable}` | Throw this from your call to control retry decisions |
+| `LLMError{http_code, message, is_retryable, retry_after_seconds}` | Throw this from your call to control retry decisions (`retry_after_seconds` optional, -1 = none) |
 | `parse_http_code(header)` | Pull the status code out of an HTTP status line |
 
 ## Notes and limitations
@@ -81,12 +82,17 @@ g++ -std=c++17 -O2 main.cpp -o demo
 
 ## Build the examples
 
-The repo builds `examples/basic_retry.cpp`, `examples/circuit_breaker.cpp` with CMake:
+The repo builds `examples/basic_retry.cpp`, `examples/circuit_breaker.cpp` and the tests with CMake:
 
 ```bash
 cmake -B build
 cmake --build build
+ctest --test-dir build --output-on-failure
 ```
+
+## Changelog
+
+- 2026-10-18: four fixes found by load-testing the library in [Exponential backoff with jitter: 64 of 100 LLM calls still failed](https://tensorust.com/articles/exponential-backoff-jitter/): 529 and 408 are retried; your own exceptions are no longer retried; `with_failover` surfaces 4xx request bugs instead of falling back; half-open admits a single trial call. Also new: Retry-After support. Regression tests in `tests/`.
 
 ## Part of llm-cpp
 

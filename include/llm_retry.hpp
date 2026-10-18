@@ -23,12 +23,14 @@ struct RetryConfig {
     double max_delay_ms       = 30000.0;
     double backoff_multiplier = 2.0;
     double jitter_factor      = 0.1;
-    std::vector<int> retry_on_http_codes = {429, 500, 502, 503, 504};
+    // 408 request timeout and 529 overloaded (Anthropic's overloaded_error)
+    // are transient, so they are retried along with 429 and the 5xx codes.
+    std::vector<int> retry_on_http_codes = {408, 429, 500, 502, 503, 504, 529};
 };
 
 struct CircuitBreakerConfig {
     int    failure_threshold  = 5;
-    double success_threshold  = 0.8;
+    double success_threshold  = 0.8;   // unused since 0.2: one half-open trial decides
     double timeout_seconds    = 60.0;
 };
 
@@ -48,6 +50,10 @@ struct LLMError {
     int         http_code;     // 0 if not HTTP error
     std::string message;
     bool        is_retryable;
+    // Seconds from the server's Retry-After header, or -1 if there was none.
+    // When set, with_retry waits this long (plus a random spread) instead of
+    // using its own backoff formula.
+    double      retry_after_seconds = -1.0;
 };
 
 // ─── Helpers (declarations) ──────────────────────────────────────────────────
@@ -57,6 +63,10 @@ int parse_http_code(const std::string& response_header);
 namespace detail {
     bool is_retryable_code(int code, const std::vector<int>& codes);
     double compute_delay_ms(int attempt, const RetryConfig& cfg);
+    // A 4xx the caller caused (bad request, auth, too long): not 408 or 429.
+    inline bool is_client_error(int code) {
+        return code >= 400 && code < 500 && code != 408 && code != 429;
+    }
 } // namespace detail
 
 // ─── with_retry ──────────────────────────────────────────────────────────────
@@ -84,18 +94,22 @@ RetryResult<T> with_retry(
             if (last || !retryable) throw;
 
             double delay = detail::compute_delay_ms(attempt, config);
-            std::uniform_real_distribution<double> jitter_dist(
-                1.0 - config.jitter_factor, 1.0 + config.jitter_factor);
-            delay *= jitter_dist(rng);
-            std::this_thread::sleep_for(
-                std::chrono::duration<double, std::milli>(delay));
-        } catch (...) {
-            if (attempt == config.max_attempts) throw;
-            // non-LLMError: retry only if not last attempt, no http code check
-            double delay = detail::compute_delay_ms(attempt, config);
+            if (err.retry_after_seconds >= 0.0) {
+                // The server said when to come back: obey it, plus a random
+                // spread so every client does not return on the same second.
+                std::uniform_real_distribution<double> spread(0.0, delay);
+                delay = err.retry_after_seconds * 1000.0 + spread(rng);
+            } else {
+                std::uniform_real_distribution<double> jitter_dist(
+                    1.0 - config.jitter_factor, 1.0 + config.jitter_factor);
+                delay *= jitter_dist(rng);
+            }
             std::this_thread::sleep_for(
                 std::chrono::duration<double, std::milli>(delay));
         }
+        // Any other exception came from the caller's own code (a JSON parse,
+        // a logic error). Retrying a bug only delays it, so it propagates
+        // immediately. Report transient network failures as LLMError{0, ...}.
     }
     throw LLMError{0, "with_retry: exhausted all attempts", false};
 }
@@ -110,7 +124,18 @@ RetryResult<T> with_failover(
 ) {
     try {
         return with_retry<T>(primary, config);
+    } catch (const LLMError& err) {
+        // A 4xx other than 408/429 means the request itself is broken; the
+        // fallback model would hide the bug behind a quality drop. Surface it.
+        if (detail::is_client_error(err.http_code)) throw;
+        using clock = std::chrono::steady_clock;
+        auto start = clock::now();
+        T result = fallback();
+        double elapsed = std::chrono::duration<double, std::milli>(
+            clock::now() - start).count();
+        return RetryResult<T>{std::move(result), 1, elapsed, true};
     } catch (...) {
+        // Not an HTTP error (e.g. CircuitBreaker open): fail over.
         using clock = std::chrono::steady_clock;
         auto start = clock::now();
         T result = fallback();
@@ -135,8 +160,12 @@ public:
     explicit CircuitBreaker(std::string name, CircuitBreakerConfig config = {})
         : name_(std::move(name)), config_(config) {}
 
+    // After the cool-down the circuit goes HalfOpen and admits exactly ONE
+    // trial call; concurrent callers fail fast until it finishes. Its success
+    // closes the circuit and clears the counters, its failure reopens it.
     template<typename T>
     T call(std::function<T()> fn) {
+        bool trial = false;
         {
             std::lock_guard<std::mutex> lk(mutex_);
             if (state_ == CircuitState::Open) {
@@ -150,14 +179,21 @@ public:
                         "CircuitBreaker[" + name_ + "]: circuit is Open");
                 }
             }
+            if (state_ == CircuitState::HalfOpen) {
+                if (trial_in_flight_) {
+                    throw std::runtime_error(
+                        "CircuitBreaker[" + name_ + "]: circuit is HalfOpen, trial in flight");
+                }
+                trial_in_flight_ = trial = true;
+            }
         }
 
         try {
             T result = fn();
-            record_success();
+            record_success(trial);
             return result;
         } catch (...) {
-            record_failure();
+            record_failure(trial);
             throw;
         }
     }
@@ -186,33 +222,34 @@ public:
         consecutive_failures_ = 0;
         total_calls_ = 0;
         failure_calls_ = 0;
+        trial_in_flight_ = false;
     }
 
 private:
-    void record_success() {
+    void record_success(bool trial) {
         std::lock_guard<std::mutex> lk(mutex_);
         ++total_calls_;
         consecutive_failures_ = 0;
         last_success_ts_ = std::time(nullptr);
-        // If HalfOpen and success rate recovers, close circuit
-        double rate = static_cast<double>(failure_calls_) / total_calls_;
-        if (state_ == CircuitState::HalfOpen &&
-            (1.0 - rate) >= config_.success_threshold) {
+        if (trial) {
+            // The half-open trial worked: the provider is back.
             state_ = CircuitState::Closed;
+            trial_in_flight_ = false;
             failure_calls_ = 0;
             total_calls_ = 0;
         }
     }
 
-    void record_failure() {
+    void record_failure(bool trial) {
         std::lock_guard<std::mutex> lk(mutex_);
         ++total_calls_;
         ++failure_calls_;
         ++consecutive_failures_;
         last_failure_ts_  = std::time(nullptr);
         last_failure_time_ = std::chrono::steady_clock::now();
-        if (consecutive_failures_ >= config_.failure_threshold) {
+        if (trial || consecutive_failures_ >= config_.failure_threshold) {
             state_ = CircuitState::Open;
+            trial_in_flight_ = false;
         }
     }
 
@@ -223,6 +260,7 @@ private:
     int                   consecutive_failures_ = 0;
     int                   total_calls_       = 0;
     int                   failure_calls_     = 0;
+    bool                  trial_in_flight_   = false;
     std::time_t           last_failure_ts_   = 0;
     std::time_t           last_success_ts_   = 0;
     std::chrono::steady_clock::time_point last_failure_time_;
