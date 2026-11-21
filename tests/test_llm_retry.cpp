@@ -156,12 +156,27 @@ static void test_retry_after_honored() {
     CHECK(r.total_elapsed_ms < 2000.0);
 }
 
+// retry_delay_ms: the same decision without sleeping, for event loops.
+static void test_retry_delay_ms() {
+    std::printf("retry_delay_ms: non-blocking retry decision\n");
+    llm::RetryConfig cfg;
+    cfg.max_attempts = 3; cfg.base_delay_ms = 100.0; cfg.jitter_factor = 0.0;
+    CHECK(llm::retry_delay_ms(1, 429, -1.0, cfg) == 100.0);
+    CHECK(llm::retry_delay_ms(2, 529, -1.0, cfg) == 200.0);
+    CHECK(llm::retry_delay_ms(3, 503, -1.0, cfg) < 0.0);   // attempts used up
+    CHECK(llm::retry_delay_ms(1, 401, -1.0, cfg) < 0.0);   // caller's fault
+    CHECK(llm::retry_delay_ms(1, 400, -1.0, cfg) < 0.0);
+    double d = llm::retry_delay_ms(1, 429, 2.0, cfg);      // Retry-After: 2
+    CHECK(d >= 2000.0 && d <= 2100.0);
+}
+
 int main() {
     test_retries_529_and_408();
     test_own_exceptions_not_retried();
     test_failover_surfaces_client_errors();
     test_half_open_single_probe();
     test_retry_after_honored();
+    test_retry_delay_ms();
     std::printf("%d checks passed, %d failed\n", g_passed, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

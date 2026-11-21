@@ -76,6 +76,15 @@ struct LLMError {
 
 int parse_http_code(const std::string& response_header);
 
+// Non-blocking form of with_retry's decision, for callers on an event loop
+// (Qt, asio, libuv) that schedule the next attempt themselves. `attempt` is
+// the attempt that just failed (1-based). Returns the delay in ms before the
+// next attempt, or -1 when the caller should stop: the code is not retryable
+// or max_attempts is used up. Retry-After and jitter follow with_retry.
+double retry_delay_ms(int attempt, int http_code,
+                      double retry_after_seconds = -1.0,
+                      const RetryConfig& config = {});
+
 namespace detail {
     bool is_retryable_code(int code, const std::vector<int>& codes);
     double compute_delay_ms(int attempt, const RetryConfig& cfg);
@@ -311,6 +320,22 @@ int parse_http_code(const std::string& header) {
         code = code * 10 + (header[i] - '0');
     }
     return code >= 100 ? code : 0;
+}
+
+double retry_delay_ms(int attempt, int http_code, double retry_after_seconds,
+                      const RetryConfig& config) {
+    if (attempt >= config.max_attempts ||
+        !detail::is_retryable_code(http_code, config.retry_on_http_codes))
+        return -1.0;
+    thread_local std::mt19937 rng(std::random_device{}());
+    double delay = detail::compute_delay_ms(attempt, config);
+    if (retry_after_seconds >= 0.0) {
+        std::uniform_real_distribution<double> spread(0.0, delay);
+        return retry_after_seconds * 1000.0 + spread(rng);
+    }
+    std::uniform_real_distribution<double> jitter_dist(
+        1.0 - config.jitter_factor, 1.0 + config.jitter_factor);
+    return delay * jitter_dist(rng);
 }
 
 namespace detail {
