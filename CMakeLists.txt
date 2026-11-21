@@ -22,3 +22,14 @@ target_compile_options(test_llm_retry PRIVATE
 find_package(Threads REQUIRED)
 target_link_libraries(test_llm_retry PRIVATE Threads::Threads)
 add_test(NAME test_llm_retry COMMAND test_llm_retry)
+
+# The header must also compile with exceptions off (Unreal, -fno-exceptions).
+add_executable(test_no_exceptions tests/test_no_exceptions.cpp)
+target_include_directories(test_no_exceptions PRIVATE include)
+if(MSVC)
+    target_compile_options(test_no_exceptions PRIVATE /EHs-c- /W4)
+    target_compile_definitions(test_no_exceptions PRIVATE _HAS_EXCEPTIONS=0)
+else()
+    target_compile_options(test_no_exceptions PRIVATE -fno-exceptions -Wall -Wextra)
+endif()
+add_test(NAME test_no_exceptions COMMAND test_no_exceptions)

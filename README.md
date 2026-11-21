@@ -16,6 +16,7 @@ LLM APIs fail in ordinary ways: 429 rate limits, 5xx overloads, dropped connecti
 - `with_failover<T>(primary, fallback, cfg)`: retry the primary, then call the fallback once; a 4xx you caused (anything but 408/429) is rethrown instead of hidden behind the fallback
 - `CircuitBreaker`: opens after N consecutive failures, rejects calls while open, after a timeout lets exactly one trial call through (success closes, failure reopens); thread safe
 - `RetryResult<T>` reports attempts used, elapsed time and whether the fallback answered
+- Builds with exceptions off (Unreal, `-fno-exceptions`): the throwing wrappers drop out, `RetryConfig`, `detail::is_retryable_code` and `detail::compute_delay_ms` stay for callers that schedule their own retries; safe in unity builds
 - Standard library only
 
 ## Quick start

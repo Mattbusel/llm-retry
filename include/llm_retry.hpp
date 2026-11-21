@@ -1,7 +1,23 @@
-#pragma once
+#ifndef LLM_RETRY_HPP
+#define LLM_RETRY_HPP
 
 // llm-retry: single-header C++ retry + circuit breaker for LLM API calls
 // Usage: #define LLM_RETRY_IMPLEMENTATION in ONE .cpp file before including.
+// The implementation section has its own guard (stb style), so that .cpp may
+// include the header after other files did, as in unity/jumbo builds.
+//
+// Built with exceptions off (-fno-exceptions, Unreal modules), the throwing
+// wrappers (with_retry, with_failover, CircuitBreaker::call) are left out and
+// RetryConfig, detail::is_retryable_code and detail::compute_delay_ms remain
+// for callers that schedule their own retries.
+
+#ifndef LLM_RETRY_EXCEPTIONS
+#  if defined(__cpp_exceptions) || defined(__EXCEPTIONS) || defined(_CPPUNWIND)
+#    define LLM_RETRY_EXCEPTIONS 1
+#  else
+#    define LLM_RETRY_EXCEPTIONS 0
+#  endif
+#endif
 
 #include <chrono>
 #include <ctime>
@@ -68,6 +84,8 @@ namespace detail {
         return code >= 400 && code < 500 && code != 408 && code != 429;
     }
 } // namespace detail
+
+#if LLM_RETRY_EXCEPTIONS
 
 // ─── with_retry ──────────────────────────────────────────────────────────────
 
@@ -145,6 +163,8 @@ RetryResult<T> with_failover(
     }
 }
 
+#endif // LLM_RETRY_EXCEPTIONS
+
 // ─── CircuitBreaker ──────────────────────────────────────────────────────────
 
 class CircuitBreaker {
@@ -163,6 +183,7 @@ public:
     // After the cool-down the circuit goes HalfOpen and admits exactly ONE
     // trial call; concurrent callers fail fast until it finishes. Its success
     // closes the circuit and clears the counters, its failure reopens it.
+#if LLM_RETRY_EXCEPTIONS
     template<typename T>
     T call(std::function<T()> fn) {
         bool trial = false;
@@ -197,6 +218,7 @@ public:
             throw;
         }
     }
+#endif // LLM_RETRY_EXCEPTIONS
 
     CircuitState state() const {
         std::lock_guard<std::mutex> lk(mutex_);
@@ -270,7 +292,10 @@ private:
 
 // ─── Implementation ──────────────────────────────────────────────────────────
 
-#ifdef LLM_RETRY_IMPLEMENTATION
+#endif // LLM_RETRY_HPP
+
+#if defined(LLM_RETRY_IMPLEMENTATION) && !defined(LLM_RETRY_IMPLEMENTED)
+#define LLM_RETRY_IMPLEMENTED
 
 namespace llm {
 
@@ -280,8 +305,12 @@ int parse_http_code(const std::string& header) {
     if (pos == std::string::npos) return 0;
     auto space = header.find(' ', pos);
     if (space == std::string::npos) return 0;
-    try { return std::stoi(header.substr(space + 1, 3)); }
-    catch (...) { return 0; }
+    int code = 0;
+    for (std::size_t i = space + 1; i < header.size() && i < space + 4; ++i) {
+        if (header[i] < '0' || header[i] > '9') return 0;
+        code = code * 10 + (header[i] - '0');
+    }
+    return code >= 100 ? code : 0;
 }
 
 namespace detail {
